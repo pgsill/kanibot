@@ -1,8 +1,9 @@
 extern crate image;
 use image::io::Reader as ImageReader;
-use image::{open, GenericImage, GenericImageView, ImageBuffer, RgbImage};
+use image::{open, DynamicImage, GenericImage, GenericImageView, ImageBuffer, RgbImage};
 use std::error::Error;
 use std::path::Path;
+use std::sync::{Arc, RwLock};
 use std::{env, process};
 use teloxide::{
     net::Download,
@@ -13,14 +14,7 @@ use teloxide::{
 use teloxide::{prelude::*, types::PhotoSize, RequestError};
 use tokio::fs::File;
 
-fn distance3d(set1: [u8; 3], set2: [u8; 3]) -> f64 {
-    let [x1, y1, z1] = set1;
-    let [x2, y2, z2] = set2;
-
-    let power = (x1 - x2).pow(2) + (y1 - y2).pow(2) + (z1 - z2).pow(2);
-
-    return f64::sqrt(power as f64);
-}
+const SIMILARITY_THRESHOLD: f64 = 0.05;
 
 fn get_belonging_third(position: u32, size: u32) -> u32 {
     if position <= size {
@@ -32,49 +26,37 @@ fn get_belonging_third(position: u32, size: u32) -> u32 {
     }
 }
 
-fn make_3x3_mosaic(filename: &std::string::String) -> RgbImage {
-    match image::open(filename) {
-        Ok(img) => {
-            // The dimensions method returns the images width and height.
-            println!("dimensions {:?}", img.dimensions());
-            // The color method returns the image's `ColorType`.
-            println!("{:?}", img.color());
+fn make_3x3_mosaic(rgbImage: RgbImage, name: &str) -> RgbImage {
+    let img = DynamicImage::ImageRgb8(rgbImage);
 
-            let img_size = img.dimensions();
-            let x_third_size = img_size.0 / 3;
-            let y_third_size = img_size.1 / 3;
+    let img_size = img.dimensions();
+    let x_third_size = img_size.0 / 3;
+    let y_third_size = img_size.1 / 3;
 
-            let mut new_image: RgbImage = ImageBuffer::new(3, 3);
+    let mut new_image: RgbImage = ImageBuffer::new(3, 3);
 
-            for (x, y, rgba) in img.pixels() {
-                let x_map_position = get_belonging_third(x, x_third_size);
-                let y_map_position = get_belonging_third(y, y_third_size);
+    for (x, y, rgba) in img.pixels() {
+        let x_map_position = get_belonging_third(x, x_third_size);
+        let y_map_position = get_belonging_third(y, y_third_size);
 
-                let [curr_r, curr_g, curr_b, _] = rgba.0;
-                let target_pixel = *new_image.get_pixel(x_map_position, y_map_position);
-                let [target_r, target_g, target_b] = target_pixel.0;
+        let [curr_r, curr_g, curr_b, _] = rgba.0;
+        let target_pixel = *new_image.get_pixel(x_map_position, y_map_position);
+        let [target_r, target_g, target_b] = target_pixel.0;
 
-                let resulting_r = (curr_r as u32 + target_r as u32) / 2;
-                let resulting_g = (target_g as u32 + curr_g as u32) / 2;
-                let resulting_b = (target_b as u32 + curr_b as u32) / 2;
+        let resulting_r = (curr_r as u32 + target_r as u32) / 2;
+        let resulting_g = (target_g as u32 + curr_g as u32) / 2;
+        let resulting_b = (target_b as u32 + curr_b as u32) / 2;
 
-                new_image.put_pixel(
-                    x_map_position,
-                    y_map_position,
-                    image::Rgb([resulting_r as u8, resulting_g as u8, resulting_b as u8]),
-                );
-            }
-
-            new_image
-                .save(format!("resultfrom{}.png", filename))
-                .unwrap();
-            return new_image;
-        }
-        Err(e) => {
-            println!("Couldn't open file {:?}: {:?}", filename, e);
-            process::exit(0x0100);
-        }
+        new_image.put_pixel(
+            x_map_position,
+            y_map_position,
+            image::Rgb([resulting_r as u8, resulting_g as u8, resulting_b as u8]),
+        )
     }
+
+    new_image.save(format!("mosaic{}", name)).unwrap();
+
+    return new_image;
 }
 
 fn compare_mosaics(mos1: &RgbImage, mos2: &RgbImage) -> f64 {
@@ -99,15 +81,7 @@ fn compare_mosaics(mos1: &RgbImage, mos2: &RgbImage) -> f64 {
                 + (*mos2_g as i32 - *mos1_g as i32).pow(2)
                 + (*mos2_b as i32 - *mos1_b as i32).pow(2)) as f64;
             let current_similarity_percentage =
-                difference / ((255u32.pow(2) + 255u32.pow(2) + 255u32.pow(2)) as f64).sqrt();
-
-            println!(
-                "percentage for pixel {:?},{:?}: {:.2}%, {:.2} absolute difference. values are: [R: {:?},{:?}][G: {:?},{:?}][B: {:?},{:?}] ",
-                pos_x, pos_y, current_similarity_percentage, difference,
-                mos2_r,mos1_r,
-                mos2_g,mos1_g,
-                mos2_b,mos1_b
-            );
+                difference.sqrt() / ((255u32.pow(2) + 255u32.pow(2) + 255u32.pow(2)) as f64).sqrt();
 
             similarity_percent = (current_similarity_percentage + similarity_percent) / 2.0;
         }
@@ -130,21 +104,25 @@ async fn get_photos_from_message(
 
     match message.update.photo() {
         Some(photos) => {
-            for photo in photos {
-                let file_id = &photo.file_id;
-                let image_filename = format!("{}.png", file_id);
+            let photo = photos.last().unwrap();
+            let file_id = &photo.file_id;
 
-                let TgFile { file_path, .. } = message.requester.get_file(file_id).send().await?;
+            let TgFile {
+                file_path,
+                file_size,
+                ..
+            } = message.requester.get_file(file_id).send().await?;
 
-                let mut file = File::create(&image_filename).await?;
+            println!("{:?} {:?} / {:?}", file_path, file_size, photos.len());
 
-                message
-                    .requester
-                    .download_file(&file_path, &mut file)
-                    .await?;
+            let mut file = File::create(&file_path).await?;
 
-                saved_images.push(image_filename);
-            }
+            message
+                .requester
+                .download_file(&file_path, &mut file)
+                .await?;
+
+            saved_images.push(file_path);
 
             return Ok(Some(saved_images));
         }
@@ -152,12 +130,26 @@ async fn get_photos_from_message(
     }
 }
 
-fn get_similar_image_posted_recently(image: RgbImage, recents: &Vec<RgbImage>) -> bool {
-    for recentImage in recents {
-        if compare_mosaics(&image, recentImage) > 1000.0 {
+fn get_similar_image_posted_recently(
+    image: RgbImage,
+    recents: &mut Vec<RgbImage>,
+    name: &str,
+) -> bool {
+    let newmosaic = make_3x3_mosaic(image, name);
+
+    for (idx, recent_image) in recents.iter().enumerate() {
+        let difference_amount = compare_mosaics(&newmosaic, recent_image);
+        println!(
+            "difference between images was: {:?}. Comparing with image #{:?}",
+            difference_amount, idx
+        );
+
+        if difference_amount < SIMILARITY_THRESHOLD {
             return true;
         }
     }
+
+    recents.push(newmosaic);
 
     return false;
 }
@@ -168,11 +160,52 @@ async fn main() {
     log::info!("Starting dices_bot...");
 
     let mut recent_messages: Vec<UpdateWithCx<AutoSend<Bot>, Message>> = vec![];
-    let mut recent_images: Vec<RgbImage> = vec![];
-    let x: Box<Vec<RgbImage>> = Box::new(recent_images);
-    let static_ref: &'static mut Vec<RgbImage> = Box::leak(x);
+    let recent_images = Arc::new(RwLock::new(Vec::new()));
 
     let bot = Bot::from_env().auto_send();
+
+    teloxide::repl(bot, {
+        move |message| {
+            let recent_images = Arc::clone(&recent_images);
+            async move {
+                let photos_in_message = get_photos_from_message(&message).await.unwrap();
+                for photo in photos_in_message.unwrap_or_default() {
+                    let image_file = match open(&photo) {
+                        Ok(dynimg) => dynimg.into_rgb8(),
+                        Err(_) => {
+                            continue;
+                        }
+                    };
+                    let image_found = get_similar_image_posted_recently(
+                        image_file,
+                        &mut recent_images.write().unwrap(),
+                        &photo,
+                    );
+
+                    if image_found {
+                        message
+                            .answer("A similar image has been posted recently.")
+                            .await?;
+                        return respond(());
+                    } else {
+                        message.answer("That's fresh.").await?;
+                        return respond(());
+                    }
+                }
+
+                return match message.update.text() {
+                    None => Ok(()),
+                    Some(message_value) => {
+                        message.answer(message_value).await?;
+                        return respond(());
+                    }
+                };
+            }
+        }
+    })
+    .await;
+
+    /* let bot = Bot::from_env().auto_send();
 
     teloxide::repl(bot, |message| async move {
         let photos_in_message = get_photos_from_message(&message).await.unwrap();
@@ -196,5 +229,5 @@ async fn main() {
             }
         };
     })
-    .await;
+    .await; */
 }
