@@ -26,8 +26,8 @@ fn get_belonging_third(position: u32, size: u32) -> u32 {
     }
 }
 
-fn make_3x3_mosaic(rgbImage: RgbImage, name: &str) -> RgbImage {
-    let img = DynamicImage::ImageRgb8(rgbImage);
+fn make_3x3_mosaic(rgb_image: RgbImage, name: &str) -> RgbImage {
+    let img = DynamicImage::ImageRgb8(rgb_image);
 
     let img_size = img.dimensions();
     let x_third_size = img_size.0 / 3;
@@ -71,7 +71,7 @@ fn compare_mosaics(mos1: &RgbImage, mos2: &RgbImage) -> f64 {
     let (size_x, size_y) = &mos1.dimensions();
 
     let similarity_percent: f64;
-    let mut pixel_count: i64 = 0;
+    let pixel_count = size_x * size_y;
     let mut similarity_accumulator: f64 = 0.0;
 
     for pos_x in 0..*size_x {
@@ -88,8 +88,6 @@ fn compare_mosaics(mos1: &RgbImage, mos2: &RgbImage) -> f64 {
             current_similarity_percentage = 1.0 - current_similarity_percentage;
 
             similarity_accumulator = similarity_accumulator + current_similarity_percentage;
-
-            pixel_count += 1;
         }
     }
 
@@ -167,13 +165,17 @@ async fn main() {
     teloxide::enable_logging!();
     log::info!("Starting dices_bot...");
 
-    let mut recent_messages: Vec<UpdateWithCx<AutoSend<Bot>, Message>> = vec![];
+    // let recent_messages = Arc::new(RwLock::new(Vec::new()));
     let recent_images = Arc::new(RwLock::new(Vec::new()));
 
     let bot = Bot::from_env().auto_send();
 
     teloxide::repl(bot, {
         move |message| {
+            let message_content = &message.update.kind;
+            println!("{:?}", message_content);
+
+            // process message photos
             let recent_images = Arc::clone(&recent_images);
             async move {
                 let photos_in_message = get_photos_from_message(&message).await.unwrap();
@@ -209,6 +211,20 @@ async fn main() {
                     }
                 };
             }
+
+            // process message as text
+            /* let recent_messages = Arc::clone(&recent_messages);
+            async move {
+
+
+                return match message.update.text() {
+                    None => Ok(()),
+                    Some(message_value) => {
+                        message.answer(message_value).await?;
+                        return respond(());
+                    }
+                };
+            } */
         }
     })
     .await;
