@@ -14,7 +14,7 @@ use teloxide::{
 use teloxide::{prelude::*, types::PhotoSize, RequestError};
 use tokio::fs::File;
 
-const SIMILARITY_THRESHOLD: f64 = 0.05;
+const SIMILARITY_THRESHOLD: f64 = 0.85;
 
 fn get_belonging_third(position: u32, size: u32) -> u32 {
     if position <= size {
@@ -70,7 +70,9 @@ fn compare_mosaics(mos1: &RgbImage, mos2: &RgbImage) -> f64 {
 
     let (size_x, size_y) = &mos1.dimensions();
 
-    let mut similarity_percent: f64 = 0.0;
+    let similarity_percent: f64;
+    let mut pixel_count: i64 = 0;
+    let mut similarity_accumulator: f64 = 0.0;
 
     for pos_x in 0..*size_x {
         for pos_y in 0..*size_y {
@@ -80,12 +82,18 @@ fn compare_mosaics(mos1: &RgbImage, mos2: &RgbImage) -> f64 {
             let difference = ((*mos2_r as i32 - *mos1_r as i32).pow(2)
                 + (*mos2_g as i32 - *mos1_g as i32).pow(2)
                 + (*mos2_b as i32 - *mos1_b as i32).pow(2)) as f64;
-            let current_similarity_percentage =
+            let mut current_similarity_percentage =
                 difference.sqrt() / ((255u32.pow(2) + 255u32.pow(2) + 255u32.pow(2)) as f64).sqrt();
 
-            similarity_percent = (current_similarity_percentage + similarity_percent) / 2.0;
+            current_similarity_percentage = 1.0 - current_similarity_percentage;
+
+            similarity_accumulator = similarity_accumulator + current_similarity_percentage;
+
+            pixel_count += 1;
         }
     }
+
+    similarity_percent = similarity_accumulator / pixel_count as f64;
 
     return similarity_percent;
 }
@@ -138,13 +146,13 @@ fn get_similar_image_posted_recently(
     let newmosaic = make_3x3_mosaic(image, name);
 
     for (idx, recent_image) in recents.iter().enumerate() {
-        let difference_amount = compare_mosaics(&newmosaic, recent_image);
+        let similarity_amount = compare_mosaics(&newmosaic, recent_image);
         println!(
-            "difference between images was: {:?}. Comparing with image #{:?}",
-            difference_amount, idx
+            "similarity between images was: {:?}/1.0; Comparing with image #{:?}",
+            similarity_amount, idx
         );
 
-        if difference_amount < SIMILARITY_THRESHOLD {
+        if similarity_amount > SIMILARITY_THRESHOLD {
             return true;
         }
     }
