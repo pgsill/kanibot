@@ -9,5 +9,7 @@ edition = "2021"
 image = "0.23.14"
 teloxide = { version = "0.5", features = ["macros", "auto-send"] }
 log = "0.4"
+substring = "1.4.5"
 pretty_env_logger = "0.4.0"
 tokio = { version =  "1.8", features = ["rt-multi-thread", "macros"] }
+color-backtrace = "0.5.1"

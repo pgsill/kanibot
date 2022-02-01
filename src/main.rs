@@ -1,73 +1,35 @@
 extern crate image;
-use image::io::Reader as ImageReader;
-use image::{open, DynamicImage, GenericImage, GenericImageView, ImageBuffer, RgbImage};
+use image::{imageops::FilterType, open, DynamicImage, RgbImage};
+use std::collections::VecDeque;
+use std::env;
 use std::error::Error;
-use std::path::Path;
 use std::sync::{Arc, RwLock};
-use std::{env, process};
+use substring::Substring;
+use teloxide::prelude::*;
+use teloxide::types::{MediaKind, MessageEntityKind, MessageKind};
 use teloxide::{
     net::Download,
     requests::{Request, Requester},
     types::File as TgFile,
     Bot,
 };
-use teloxide::{prelude::*, types::PhotoSize, RequestError};
 use tokio::fs::File;
 
-const SIMILARITY_THRESHOLD: f64 = 0.85;
-
-fn get_belonging_third(position: u32, size: u32) -> u32 {
-    if position <= size {
-        return 0;
-    } else if position > size && position < size * 2 {
-        return 1;
-    } else {
-        return 2;
-    }
-}
+const SIMILARITY_THRESHOLD: f64 = 0.95;
+const MAX_RECENT_IMAGES: usize = 50;
+const MAX_RECENT_LINKS: usize = 50;
 
 fn make_3x3_mosaic(rgb_image: RgbImage, name: &str) -> RgbImage {
     let img = DynamicImage::ImageRgb8(rgb_image);
 
-    let img_size = img.dimensions();
-    let x_third_size = img_size.0 / 3;
-    let y_third_size = img_size.1 / 3;
-
-    let mut new_image: RgbImage = ImageBuffer::new(3, 3);
-
-    for (x, y, rgba) in img.pixels() {
-        let x_map_position = get_belonging_third(x, x_third_size);
-        let y_map_position = get_belonging_third(y, y_third_size);
-
-        let [curr_r, curr_g, curr_b, _] = rgba.0;
-        let target_pixel = *new_image.get_pixel(x_map_position, y_map_position);
-        let [target_r, target_g, target_b] = target_pixel.0;
-
-        let resulting_r = (curr_r as u32 + target_r as u32) / 2;
-        let resulting_g = (target_g as u32 + curr_g as u32) / 2;
-        let resulting_b = (target_b as u32 + curr_b as u32) / 2;
-
-        new_image.put_pixel(
-            x_map_position,
-            y_map_position,
-            image::Rgb([resulting_r as u8, resulting_g as u8, resulting_b as u8]),
-        )
-    }
+    let new_image = img.resize_exact(9, 9, FilterType::Gaussian);
 
     new_image.save(format!("mosaic{}", name)).unwrap();
 
-    return new_image;
+    return new_image.to_rgb8();
 }
 
 fn compare_mosaics(mos1: &RgbImage, mos2: &RgbImage) -> f64 {
-    if &mos1.dimensions() != &mos2.dimensions() {
-        println!(
-            "Mosaics have different sizes: {:?},{:?}",
-            &mos1.dimensions(),
-            &mos2.dimensions()
-        );
-    }
-
     let (size_x, size_y) = &mos1.dimensions();
 
     let similarity_percent: f64;
@@ -96,13 +58,6 @@ fn compare_mosaics(mos1: &RgbImage, mos2: &RgbImage) -> f64 {
     return similarity_percent;
 }
 
-fn cache_message(
-    mut vec: Vec<UpdateWithCx<AutoSend<Bot>, Message>>,
-    message: UpdateWithCx<AutoSend<Bot>, Message>,
-) {
-    vec.push(message);
-}
-
 async fn get_photos_from_message(
     message: &UpdateWithCx<AutoSend<Bot>, Message>,
 ) -> Result<Option<Vec<String>>, Box<dyn Error>> {
@@ -113,13 +68,7 @@ async fn get_photos_from_message(
             let photo = photos.last().unwrap();
             let file_id = &photo.file_id;
 
-            let TgFile {
-                file_path,
-                file_size,
-                ..
-            } = message.requester.get_file(file_id).send().await?;
-
-            println!("{:?} {:?} / {:?}", file_path, file_size, photos.len());
+            let TgFile { file_path, .. } = message.requester.get_file(file_id).send().await?;
 
             let mut file = File::create(&file_path).await?;
 
@@ -138,7 +87,7 @@ async fn get_photos_from_message(
 
 fn get_similar_image_posted_recently(
     image: RgbImage,
-    recents: &mut Vec<RgbImage>,
+    recents: &mut VecDeque<RgbImage>,
     name: &str,
 ) -> bool {
     let newmosaic = make_3x3_mosaic(image, name);
@@ -155,28 +104,76 @@ fn get_similar_image_posted_recently(
         }
     }
 
-    recents.push(newmosaic);
+    recents.push_front(newmosaic);
+
+    if recents.len() > MAX_RECENT_IMAGES {
+        recents.pop_back();
+    }
+
+    return false;
+}
+
+fn get_links_posted_recently(
+    message_content: &MessageKind,
+    recents: &mut VecDeque<String>,
+) -> bool {
+    match message_content {
+        MessageKind::Common(message_content) => {
+            let media_kind = &message_content.media_kind;
+
+            match media_kind {
+                MediaKind::Text(media_kind) => {
+                    let text = str::to_string(&media_kind.text);
+
+                    for entity in media_kind.entities.iter() {
+                        let kind = &entity.kind;
+
+                        if let MessageEntityKind::Url = kind {
+                            let start_index = entity.offset;
+                            let end_index = entity.offset + entity.length;
+                            let url = text.substring(start_index, end_index).to_string();
+
+                            // check if exists
+                            if recents.contains(&url) {
+                                return true;
+                            } else {
+                                recents.push_front(url);
+
+                                if recents.len() > MAX_RECENT_LINKS {
+                                    recents.pop_back();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                _ => {}
+            }
+        }
+        _ => {}
+    }
 
     return false;
 }
 
 #[tokio::main]
 async fn main() {
+    color_backtrace::install();
     teloxide::enable_logging!();
     log::info!("Starting dices_bot...");
 
-    // let recent_messages = Arc::new(RwLock::new(Vec::new()));
-    let recent_images = Arc::new(RwLock::new(Vec::new()));
+    let recent_links = Arc::new(RwLock::new(VecDeque::new()));
+    let recent_images = Arc::new(RwLock::new(VecDeque::new()));
 
     let bot = Bot::from_env().auto_send();
 
     teloxide::repl(bot, {
         move |message| {
-            let message_content = &message.update.kind;
-            println!("{:?}", message_content);
-
-            // process message photos
+            // atomic references
             let recent_images = Arc::clone(&recent_images);
+            let recent_links = Arc::clone(&recent_links);
+
+            // process photos and links
             async move {
                 let photos_in_message = get_photos_from_message(&message).await.unwrap();
                 for photo in photos_in_message.unwrap_or_default() {
@@ -197,34 +194,28 @@ async fn main() {
                             .answer("A similar image has been posted recently.")
                             .await?;
                         return respond(());
-                    } else {
-                        message.answer("That's fresh.").await?;
-                        return respond(());
                     }
+                }
+
+                // if no images are processed,
+                // process message as text
+                let has_duplicate_message = get_links_posted_recently(
+                    &message.update.kind,
+                    &mut recent_links.write().unwrap(),
+                );
+
+                if has_duplicate_message {
+                    message
+                        .answer("Someone already posted that link. 😳✋😂👉🚪")
+                        .await?;
+                    return respond(());
                 }
 
                 return match message.update.text() {
                     None => Ok(()),
-                    Some(message_value) => {
-                        message.answer(message_value).await?;
-                        return respond(());
-                    }
+                    _ => Ok(()),
                 };
             }
-
-            // process message as text
-            /* let recent_messages = Arc::clone(&recent_messages);
-            async move {
-
-
-                return match message.update.text() {
-                    None => Ok(()),
-                    Some(message_value) => {
-                        message.answer(message_value).await?;
-                        return respond(());
-                    }
-                };
-            } */
         }
     })
     .await;
