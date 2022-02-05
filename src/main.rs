@@ -3,7 +3,7 @@ use image::{imageops::FilterType, open, DynamicImage, RgbImage};
 use std::collections::VecDeque;
 use std::env;
 use std::error::Error;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use substring::Substring;
 use teloxide::prelude::*;
 use teloxide::types::{MediaKind, MessageEntityKind, MessageKind};
@@ -14,24 +14,23 @@ use teloxide::{
     Bot,
 };
 use tokio::fs::File;
+use tokio::sync::RwLock;
 mod commands;
 use crate::commands::CommandsJson;
 
-const SIMILARITY_THRESHOLD: f64 = 0.95;
 const MIN_SIMILARITY_THRESHOLD: f64 = 0.8;
 const MAX_SIMILARITY_THRESHOLD: f64 = 0.99;
 
-const MOSAIC_SIZE: u32 = 9;
 const MIN_MOSAIC_SIZE: u32 = 2;
 const MAX_MOSAIC_SIZE: u32 = 12;
 
 const MAX_RECENT_LINKS: usize = 50;
 const MAX_RECENT_IMAGES: usize = 50;
 
-fn make_3x3_mosaic(rgb_image: RgbImage, name: &str) -> RgbImage {
+fn make_3x3_mosaic(rgb_image: RgbImage, name: &str, mosaic_size: &u32) -> RgbImage {
     let img = DynamicImage::ImageRgb8(rgb_image);
 
-    let new_image = img.resize_exact(MOSAIC_SIZE, MOSAIC_SIZE, FilterType::Gaussian);
+    let new_image = img.resize_exact(*mosaic_size, *mosaic_size, FilterType::Gaussian);
 
     new_image.save(format!("mosaic{}", name)).unwrap();
 
@@ -98,19 +97,19 @@ fn get_similar_image_posted_recently(
     image: RgbImage,
     recents: &mut VecDeque<RgbImage>,
     name: &str,
-) -> bool {
-    let newmosaic = make_3x3_mosaic(image, name);
+    similarity_threshold: &f64,
+    mosaic_size: &u32,
+) -> f64 {
+    let newmosaic = make_3x3_mosaic(image, name, mosaic_size);
 
     for (idx, recent_image) in recents.iter().enumerate() {
         let similarity_amount = compare_mosaics(&newmosaic, recent_image);
-        println!(
-            "similarity between images was: {:?}/1.0; Comparing with image #{:?}",
-            similarity_amount, idx
-        );
 
-        if similarity_amount > SIMILARITY_THRESHOLD {
-            return true;
+        if similarity_amount > *similarity_threshold {
+            return similarity_amount;
         }
+
+        return 0.0;
     }
 
     recents.push_front(newmosaic);
@@ -119,7 +118,7 @@ fn get_similar_image_posted_recently(
         recents.pop_back();
     }
 
-    return false;
+    return 0.0;
 }
 
 fn get_links_posted_recently(
@@ -168,13 +167,13 @@ fn get_links_posted_recently(
 fn command_handler(
     message: &UpdateWithCx<AutoSend<Bot>, Message>,
     command_strings: &CommandsJson,
+    mut similarity_threshold: &mut f64,
+    mut mosaic_size: &mut u32,
 ) -> Option<String> {
     let message_text = match message.update.text() {
         Some(text) => String::from(text),
         _ => String::from(""),
     };
-
-    println!("Received message: {:?}", message_text);
 
     if command_strings.help.contains(&message_text) {
         let increase_similarity_threshold_string =
@@ -183,8 +182,6 @@ fn command_handler(
             command_strings.decreaseSimilarityThreshold.join(" or ");
         let increase_mosaic_size_string = command_strings.increaseMosaicSize.join(" or ");
         let decrease_mosaic_size_string = command_strings.decreaseMosaicSize.join(" or ");
-
-        println!("Received HELP REQUEST: {:?}", message_text);
 
         return Some(format!(
             "I can respond to the following prompts: {} / {} / {} / {}",
@@ -195,26 +192,72 @@ fn command_handler(
         ));
     }
 
-    println!(
-        "{:?}",
-        command_strings
-            .increaseSimilarityThreshold
-            .contains(&message_text)
-    );
-    println!(
-        "{:?}",
-        command_strings
-            .decreaseSimilarityThreshold
-            .contains(&message_text)
-    );
-    println!(
-        "{:?}",
-        command_strings.increaseMosaicSize.contains(&message_text)
-    );
-    println!(
-        "{:?}",
-        command_strings.decreaseMosaicSize.contains(&message_text)
-    );
+    if command_strings
+        .increaseSimilarityThreshold
+        .contains(&message_text)
+    {
+        if (*similarity_threshold + 0.01 > MAX_SIMILARITY_THRESHOLD) {
+            return Some(format!(
+                "Similarity threshold already at maximum: {}%.",
+                (MAX_SIMILARITY_THRESHOLD * 100.0) as f32
+            ));
+        }
+
+        *similarity_threshold += 0.01;
+
+        return Some(format!(
+            "Similarity threshold increased to {}%.",
+            (*similarity_threshold * 100.0) as f32
+        ));
+    }
+    if command_strings
+        .decreaseSimilarityThreshold
+        .contains(&message_text)
+    {
+        if (*similarity_threshold - 0.01 < MIN_SIMILARITY_THRESHOLD) {
+            return Some(format!(
+                "Similarity threshold already at minimum: {}%.",
+                (MIN_SIMILARITY_THRESHOLD * 100.0) as f32
+            ));
+        }
+
+        *similarity_threshold -= 0.01;
+
+        return Some(format!(
+            "Similarity threshold decreased to {}%.",
+            (*similarity_threshold * 100.0) as f32
+        ));
+    }
+    if command_strings.increaseMosaicSize.contains(&message_text) {
+        if (*mosaic_size + 1 > MAX_MOSAIC_SIZE) {
+            return Some(format!(
+                "Cognitive differentiation already at maximum: {}.",
+                MAX_MOSAIC_SIZE
+            ));
+        }
+
+        *mosaic_size += 1;
+
+        return Some(format!(
+            "Cognitive differentiation increased to {}.",
+            mosaic_size
+        ));
+    }
+    if command_strings.decreaseMosaicSize.contains(&message_text) {
+        if (*mosaic_size - 1 < MIN_MOSAIC_SIZE) {
+            return Some(format!(
+                "Cognitive differentiation already at minimum: {}.",
+                MIN_MOSAIC_SIZE
+            ));
+        }
+
+        *mosaic_size -= 1;
+
+        return Some(format!(
+            "Cognitive differentiation decreased to {}.",
+            mosaic_size
+        ));
+    }
 
     return None;
 }
@@ -224,6 +267,9 @@ async fn main() {
     color_backtrace::install();
     teloxide::enable_logging!();
     log::info!("Starting dices_bot...");
+
+    let similarity_threshold = Arc::new(RwLock::new(0.95));
+    let mosaic_size: Arc<RwLock<u32>> = Arc::new(RwLock::new(9));
 
     let recent_links = Arc::new(RwLock::new(VecDeque::new()));
     let recent_images = Arc::new(RwLock::new(VecDeque::new()));
@@ -237,11 +283,17 @@ async fn main() {
             let command_strings = Arc::clone(&command_strings);
             let recent_images = Arc::clone(&recent_images);
             let recent_links = Arc::clone(&recent_links);
+            let similarity_threshold = Arc::clone(&similarity_threshold);
+            let mosaic_size = Arc::clone(&mosaic_size);
 
             // process photos and links
             async move {
-                if let Some(response) = command_handler(&message, &command_strings.read().unwrap())
-                {
+                if let Some(response) = command_handler(
+                    &message,
+                    &*command_strings.read().await,
+                    &mut *similarity_threshold.write().await,
+                    &mut *mosaic_size.write().await,
+                ) {
                     message.answer(response).await?;
                     return respond(());
                 }
@@ -256,13 +308,19 @@ async fn main() {
                     };
                     let image_found = get_similar_image_posted_recently(
                         image_file,
-                        &mut recent_images.write().unwrap(),
+                        &mut *recent_images.write().await,
                         &photo,
+                        &mut *similarity_threshold.write().await,
+                        &mut *mosaic_size.write().await,
                     );
 
-                    if image_found {
+                    if image_found > 0.0 {
                         message
-                            .answer("A similar image has been posted recently.")
+                            .answer(format!(
+                                "A similar image has been posted recently ({:.1$}% match). 😂⏰⏰⏰",
+                                image_found * 100.0,
+                                2
+                            ))
                             .await?;
                         return respond(());
                     }
@@ -272,7 +330,7 @@ async fn main() {
                 // process message as text
                 let has_duplicate_message = get_links_posted_recently(
                     &message.update.kind,
-                    &mut recent_links.write().unwrap(),
+                    &mut *recent_links.write().await,
                 );
 
                 if has_duplicate_message {
