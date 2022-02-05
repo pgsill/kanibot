@@ -14,15 +14,24 @@ use teloxide::{
     Bot,
 };
 use tokio::fs::File;
+mod commands;
+use crate::commands::CommandsJson;
 
 const SIMILARITY_THRESHOLD: f64 = 0.95;
-const MAX_RECENT_IMAGES: usize = 50;
+const MIN_SIMILARITY_THRESHOLD: f64 = 0.8;
+const MAX_SIMILARITY_THRESHOLD: f64 = 0.99;
+
+const MOSAIC_SIZE: u32 = 9;
+const MIN_MOSAIC_SIZE: u32 = 2;
+const MAX_MOSAIC_SIZE: u32 = 12;
+
 const MAX_RECENT_LINKS: usize = 50;
+const MAX_RECENT_IMAGES: usize = 50;
 
 fn make_3x3_mosaic(rgb_image: RgbImage, name: &str) -> RgbImage {
     let img = DynamicImage::ImageRgb8(rgb_image);
 
-    let new_image = img.resize_exact(9, 9, FilterType::Gaussian);
+    let new_image = img.resize_exact(MOSAIC_SIZE, MOSAIC_SIZE, FilterType::Gaussian);
 
     new_image.save(format!("mosaic{}", name)).unwrap();
 
@@ -156,6 +165,60 @@ fn get_links_posted_recently(
     return false;
 }
 
+fn command_handler(
+    message: &UpdateWithCx<AutoSend<Bot>, Message>,
+    command_strings: &CommandsJson,
+) -> Option<String> {
+    let message_text = match message.update.text() {
+        Some(text) => String::from(text),
+        _ => String::from(""),
+    };
+
+    println!("Received message: {:?}", message_text);
+
+    if command_strings.help.contains(&message_text) {
+        let increase_similarity_threshold_string =
+            command_strings.increaseSimilarityThreshold.join(" or ");
+        let decrease_similarity_threshold_string =
+            command_strings.decreaseSimilarityThreshold.join(" or ");
+        let increase_mosaic_size_string = command_strings.increaseMosaicSize.join(" or ");
+        let decrease_mosaic_size_string = command_strings.decreaseMosaicSize.join(" or ");
+
+        println!("Received HELP REQUEST: {:?}", message_text);
+
+        return Some(format!(
+            "I can respond to the following prompts: {} / {} / {} / {}",
+            increase_similarity_threshold_string,
+            decrease_similarity_threshold_string,
+            increase_mosaic_size_string,
+            decrease_mosaic_size_string
+        ));
+    }
+
+    println!(
+        "{:?}",
+        command_strings
+            .increaseSimilarityThreshold
+            .contains(&message_text)
+    );
+    println!(
+        "{:?}",
+        command_strings
+            .decreaseSimilarityThreshold
+            .contains(&message_text)
+    );
+    println!(
+        "{:?}",
+        command_strings.increaseMosaicSize.contains(&message_text)
+    );
+    println!(
+        "{:?}",
+        command_strings.decreaseMosaicSize.contains(&message_text)
+    );
+
+    return None;
+}
+
 #[tokio::main]
 async fn main() {
     color_backtrace::install();
@@ -164,17 +227,25 @@ async fn main() {
 
     let recent_links = Arc::new(RwLock::new(VecDeque::new()));
     let recent_images = Arc::new(RwLock::new(VecDeque::new()));
+    let command_strings = Arc::new(RwLock::new(commands::get_commands_json()));
 
     let bot = Bot::from_env().auto_send();
 
     teloxide::repl(bot, {
         move |message| {
             // atomic references
+            let command_strings = Arc::clone(&command_strings);
             let recent_images = Arc::clone(&recent_images);
             let recent_links = Arc::clone(&recent_links);
 
             // process photos and links
             async move {
+                if let Some(response) = command_handler(&message, &command_strings.read().unwrap())
+                {
+                    message.answer(response).await?;
+                    return respond(());
+                }
+
                 let photos_in_message = get_photos_from_message(&message).await.unwrap();
                 for photo in photos_in_message.unwrap_or_default() {
                     let image_file = match open(&photo) {
