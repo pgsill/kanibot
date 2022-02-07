@@ -1,5 +1,6 @@
 extern crate image;
-use image::{imageops::FilterType, open, DynamicImage, RgbImage};
+use image::io::Reader;
+use image::{imageops::FilterType, DynamicImage, RgbImage};
 use std::collections::VecDeque;
 use std::env;
 use std::error::Error;
@@ -262,6 +263,10 @@ fn command_handler(
     return None;
 }
 
+fn open_image(path: &str) -> Result<DynamicImage, Box<dyn Error>> {
+    Ok(Reader::open(&path)?.with_guessed_format()?.decode()?)
+}
+
 #[tokio::main]
 async fn main() {
     color_backtrace::install();
@@ -300,14 +305,15 @@ async fn main() {
 
                 let photos_in_message = get_photos_from_message(&message).await.unwrap();
                 for photo in photos_in_message.unwrap_or_default() {
-                    let image_file = match open(&photo) {
+                    let image = match open_image(&photo) {
                         Ok(dynimg) => dynimg.into_rgb8(),
-                        Err(_) => {
+                        Err(err) => {
+                            eprintln!("error found trying to open image at {}: {}", photo, err);
                             continue;
                         }
                     };
                     let image_found = get_similar_image_posted_recently(
-                        image_file,
+                        image,
                         &mut *recent_images.write().await,
                         &photo,
                         &mut *similarity_threshold.write().await,
@@ -374,4 +380,16 @@ async fn main() {
         };
     })
     .await; */
+}
+
+#[test]
+fn test_image_loads_even_with_wrong_extension() {
+    // original image file
+    let correct_ext = open_image("testdata/among.jpg").unwrap();
+    // jpg file renamed to .png
+    let wrong_ext = open_image("testdata/among_jpg.png").unwrap();
+    // compare image data
+    if wrong_ext != correct_ext {
+        panic!("renamed image does not contain the same data as the original");
+    }
 }
