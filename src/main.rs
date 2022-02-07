@@ -102,7 +102,7 @@ fn get_similar_image_posted_recently(
 ) -> f64 {
     let newmosaic = make_3x3_mosaic(image, name, mosaic_size);
 
-    for (idx, recent_image) in recents.iter().enumerate() {
+    for (_, recent_image) in recents.iter().enumerate() {
         let similarity_amount = compare_mosaics(&newmosaic, recent_image);
 
         if similarity_amount > *similarity_threshold {
@@ -167,8 +167,8 @@ fn get_links_posted_recently(
 fn command_handler(
     message: &UpdateWithCx<AutoSend<Bot>, Message>,
     command_strings: &CommandsJson,
-    mut similarity_threshold: &mut f64,
-    mut mosaic_size: &mut u32,
+    similarity_threshold: &mut f64,
+    mosaic_size: &mut u32,
 ) -> Option<String> {
     let message_text = match message.update.text() {
         Some(text) => String::from(text),
@@ -196,7 +196,7 @@ fn command_handler(
         .increaseSimilarityThreshold
         .contains(&message_text)
     {
-        if (*similarity_threshold + 0.01 > MAX_SIMILARITY_THRESHOLD) {
+        if *similarity_threshold + 0.01 > MAX_SIMILARITY_THRESHOLD {
             return Some(format!(
                 "Similarity threshold already at maximum: {}%.",
                 (MAX_SIMILARITY_THRESHOLD * 100.0) as f32
@@ -214,7 +214,7 @@ fn command_handler(
         .decreaseSimilarityThreshold
         .contains(&message_text)
     {
-        if (*similarity_threshold - 0.01 < MIN_SIMILARITY_THRESHOLD) {
+        if *similarity_threshold - 0.01 < MIN_SIMILARITY_THRESHOLD {
             return Some(format!(
                 "Similarity threshold already at minimum: {}%.",
                 (MIN_SIMILARITY_THRESHOLD * 100.0) as f32
@@ -229,7 +229,7 @@ fn command_handler(
         ));
     }
     if command_strings.increaseMosaicSize.contains(&message_text) {
-        if (*mosaic_size + 1 > MAX_MOSAIC_SIZE) {
+        if *mosaic_size + 1 > MAX_MOSAIC_SIZE {
             return Some(format!(
                 "Cognitive differentiation already at maximum: {}.",
                 MAX_MOSAIC_SIZE
@@ -244,7 +244,7 @@ fn command_handler(
         ));
     }
     if command_strings.decreaseMosaicSize.contains(&message_text) {
-        if (*mosaic_size - 1 < MIN_MOSAIC_SIZE) {
+        if *mosaic_size - 1 < MIN_MOSAIC_SIZE {
             return Some(format!(
                 "Cognitive differentiation already at minimum: {}.",
                 MIN_MOSAIC_SIZE
