@@ -1,5 +1,6 @@
 extern crate image;
-use image::{imageops::FilterType, open, DynamicImage, RgbImage};
+use image::io::Reader;
+use image::{imageops::FilterType, DynamicImage, RgbImage};
 use std::collections::VecDeque;
 use std::env;
 use std::error::Error;
@@ -102,7 +103,7 @@ fn get_similar_image_posted_recently(
 ) -> f64 {
     let newmosaic = make_3x3_mosaic(image, name, mosaic_size);
 
-    for (idx, recent_image) in recents.iter().enumerate() {
+    for (_, recent_image) in recents.iter().enumerate() {
         let similarity_amount = compare_mosaics(&newmosaic, recent_image);
 
         if similarity_amount > *similarity_threshold {
@@ -167,8 +168,8 @@ fn get_links_posted_recently(
 fn command_handler(
     message: &UpdateWithCx<AutoSend<Bot>, Message>,
     command_strings: &CommandsJson,
-    mut similarity_threshold: &mut f64,
-    mut mosaic_size: &mut u32,
+    similarity_threshold: &mut f64,
+    mosaic_size: &mut u32,
 ) -> Option<String> {
     let message_text = match message.update.text() {
         Some(text) => String::from(text),
@@ -196,7 +197,7 @@ fn command_handler(
         .increaseSimilarityThreshold
         .contains(&message_text)
     {
-        if (*similarity_threshold + 0.01 > MAX_SIMILARITY_THRESHOLD) {
+        if *similarity_threshold + 0.01 > MAX_SIMILARITY_THRESHOLD {
             return Some(format!(
                 "Similarity threshold already at maximum: {}%.",
                 (MAX_SIMILARITY_THRESHOLD * 100.0) as f32
@@ -214,7 +215,7 @@ fn command_handler(
         .decreaseSimilarityThreshold
         .contains(&message_text)
     {
-        if (*similarity_threshold - 0.01 < MIN_SIMILARITY_THRESHOLD) {
+        if *similarity_threshold - 0.01 < MIN_SIMILARITY_THRESHOLD {
             return Some(format!(
                 "Similarity threshold already at minimum: {}%.",
                 (MIN_SIMILARITY_THRESHOLD * 100.0) as f32
@@ -229,7 +230,7 @@ fn command_handler(
         ));
     }
     if command_strings.increaseMosaicSize.contains(&message_text) {
-        if (*mosaic_size + 1 > MAX_MOSAIC_SIZE) {
+        if *mosaic_size + 1 > MAX_MOSAIC_SIZE {
             return Some(format!(
                 "Cognitive differentiation already at maximum: {}.",
                 MAX_MOSAIC_SIZE
@@ -244,7 +245,7 @@ fn command_handler(
         ));
     }
     if command_strings.decreaseMosaicSize.contains(&message_text) {
-        if (*mosaic_size - 1 < MIN_MOSAIC_SIZE) {
+        if *mosaic_size - 1 < MIN_MOSAIC_SIZE {
             return Some(format!(
                 "Cognitive differentiation already at minimum: {}.",
                 MIN_MOSAIC_SIZE
@@ -260,6 +261,10 @@ fn command_handler(
     }
 
     return None;
+}
+
+fn open_image(path: &str) -> Result<DynamicImage, Box<dyn Error>> {
+    Ok(Reader::open(&path)?.with_guessed_format()?.decode()?)
 }
 
 #[tokio::main]
@@ -300,14 +305,15 @@ async fn main() {
 
                 let photos_in_message = get_photos_from_message(&message).await.unwrap();
                 for photo in photos_in_message.unwrap_or_default() {
-                    let image_file = match open(&photo) {
+                    let image = match open_image(&photo) {
                         Ok(dynimg) => dynimg.into_rgb8(),
-                        Err(_) => {
+                        Err(err) => {
+                            eprintln!("error found trying to open image at {}: {}", photo, err);
                             continue;
                         }
                     };
                     let image_found = get_similar_image_posted_recently(
-                        image_file,
+                        image,
                         &mut *recent_images.write().await,
                         &photo,
                         &mut *similarity_threshold.write().await,
@@ -374,4 +380,16 @@ async fn main() {
         };
     })
     .await; */
+}
+
+#[test]
+fn test_image_loads_even_with_wrong_extension() {
+    // original image file
+    let correct_ext = open_image("testdata/among.jpg").unwrap();
+    // jpg file renamed to .png
+    let wrong_ext = open_image("testdata/among_jpg.png").unwrap();
+    // compare image data
+    if wrong_ext != correct_ext {
+        panic!("renamed image does not contain the same data as the original");
+    }
 }
