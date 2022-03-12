@@ -21,8 +21,7 @@ use crate::commands::CommandsJson;
 const MIN_SIMILARITY_THRESHOLD: f64 = 0.8;
 const MAX_SIMILARITY_THRESHOLD: f64 = 0.99;
 
-const MIN_MOSAIC_SIZE: u32 = 2;
-const MAX_MOSAIC_SIZE: u32 = 12;
+const MOSAIC_SIZE: u32 = 5;
 
 const MAX_RECENT_LINKS: usize = 50;
 const MAX_RECENT_IMAGES: usize = 50;
@@ -228,11 +227,11 @@ fn command_handler(
             (*similarity_threshold * 100.0) as f32
         ));
     }
-    if command_strings.increaseMosaicSize.contains(&message_text) {
-        if (*mosaic_size + 1 > MAX_MOSAIC_SIZE) {
+    /* if command_strings.increaseMosaicSize.contains(&message_text) {
+        if (*mosaic_size + 1 > MOSAIC_SIZE) {
             return Some(format!(
                 "Cognitive differentiation already at maximum: {}.",
-                MAX_MOSAIC_SIZE
+                MOSAIC_SIZE
             ));
         }
 
@@ -244,10 +243,10 @@ fn command_handler(
         ));
     }
     if command_strings.decreaseMosaicSize.contains(&message_text) {
-        if (*mosaic_size - 1 < MIN_MOSAIC_SIZE) {
+        if (*mosaic_size - 1 < MOSAIC_SIZE) {
             return Some(format!(
                 "Cognitive differentiation already at minimum: {}.",
-                MIN_MOSAIC_SIZE
+                MOSAIC_SIZE
             ));
         }
 
@@ -257,7 +256,7 @@ fn command_handler(
             "Cognitive differentiation decreased to {}.",
             mosaic_size
         ));
-    }
+    } */
 
     return None;
 }
@@ -269,7 +268,7 @@ async fn main() {
     log::info!("Starting dices_bot...");
 
     let similarity_threshold = Arc::new(RwLock::new(0.95));
-    let mosaic_size: Arc<RwLock<u32>> = Arc::new(RwLock::new(9));
+    let mosaic_size: Arc<RwLock<u32>> = Arc::new(RwLock::new(MOSAIC_SIZE));
 
     let recent_links = Arc::new(RwLock::new(VecDeque::new()));
     let recent_images = Arc::new(RwLock::new(VecDeque::new()));
